@@ -88,6 +88,10 @@ The script runs:
 - `pyright`
 - `pytest`
 
+## Attribution
+
+Weather data is provided by [Open-Meteo](https://open-meteo.com/) under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
 ## Project layout
 
 ```text
