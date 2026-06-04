@@ -1,0 +1,977 @@
+Thank you.  For the BeeAI framework to make use of RAG, is RAG intended to be invoked as a tool, or are the retrieved policies intended to be part of the context or the prompt?
+
+----------
+
+In practical terms: **both**.
+
+But for your BeeAI experiment, I would implement RAG as a **tool**, and the tool’s result becomes **context for the final answer**.
+
+That distinction matters:
+
+```text id="a8dlsx"
+RAG mechanism:
+  invoked as a tool
+
+Retrieved policies:
+  inserted into the agent's working context / prompt for answer generation
+```
+
+So the flow would be:
+
+```text id="zr6q9m"
+User question
+  → MainAgent thinks
+  → MainAgent calls PolicyLookupTool
+  → PolicyLookupTool returns relevant policy statements
+  → MainAgent uses those returned statements when composing the final answer
+```
+
+BeeAI’s own framing supports this general model: its agents are designed around reasoning, tool use, knowledge/RAG integration, middleware, and multi-agent workflows. The BeeAI docs describe “RAG Integration” as connecting agents to knowledge bases and document stores, and the Requirement Agent is specifically intended to make tool-use behavior more predictable and controllable. ([BeeAI Framework][1])
+
+## Why I would use a tool
+
+For your example, the policy lookup is an **action** the agent performs:
+
+```text id="5ny2v6"
+Given this travel phrase, retrieve matching company policies.
+```
+
+That is exactly tool-shaped.
+
+The tool can be very simple:
+
+```text id="pvfngm"
+PolicyLookupTool input:
+  "take a train and car to Sydney"
+
+PolicyLookupTool output:
+  [
+    "Train travel is preferred for short journeys where practical.",
+    "Car travel over 300 kilometres requires manager approval.",
+    "Travellers must choose reasonable economy-class or equivalent options."
+  ]
+```
+
+Then the agent receives that output and uses it in the answer.
+
+## Why I would not pre-inject all policies into the prompt
+
+You *could* load all policies from JSON and put them directly into the agent instructions or prompt. For a tiny demo with five policies, that would work.
+
+But it teaches the wrong pattern.
+
+This:
+
+```text id="co18av"
+instructions = """
+Here are all company travel policies:
+...
+"""
+```
+
+is not really retrieval. It is just **static prompt context**.
+
+It is fine for a toy, but it does not demonstrate the RAG shape clearly. RAG is more naturally:
+
+```text id="dwvr6c"
+retrieve only the relevant policies at runtime
+```
+
+That retrieval step is what your BeeAI tool should demonstrate.
+
+## The cleanest BeeAI design
+
+I would use a dedicated tool:
+
+```text id="qg26uj"
+PolicyLookupTool
+```
+
+The main agent has these tools:
+
+```text id="6129x5"
+ThinkTool()
+WeatherLookup handoff/tool
+KnowledgeLookup handoff/tool
+PolicyLookupTool()
+```
+
+Then the main agent’s instructions say something like:
+
+```text id="0h9ud8"
+When the user asks about travel, use the policy lookup tool to retrieve relevant company travel policies before answering.
+```
+
+And, if you want to make it more deterministic, use a requirement to force policy lookup when appropriate. Since you are experimenting with `RequirementAgent`, that is actually the interesting BeeAI-specific part: you can test whether the agent reliably performs the retrieval step before generating the final answer.
+
+## Tool output becomes context
+
+A tool result is not “outside” the prompt in any meaningful LLM sense. Once the tool returns data, the agent framework usually feeds that result back into the model’s conversation state so the model can use it.
+
+So conceptually:
+
+```text id="r6bppn"
+Tool invocation retrieves data.
+Retrieved data becomes context.
+The model generates using that context.
+```
+
+This is why “tool or context?” is not an either/or. The tool is the retrieval mechanism. The returned policies are the retrieved context.
+
+## For your small test, I would do this
+
+Use JSON storage:
+
+```text id="53e6d4"
+travel_policies.json
+```
+
+Create one BeeAI tool:
+
+```text id="1tspys"
+CompanyTravelPolicyTool
+```
+
+The tool should:
+
+```text id="77v1qr"
+1. Accept the travel phrase.
+2. Extract tags: train, car, plane, ferry.
+3. Load policies from JSON.
+4. Return matching one-sentence policies.
+```
+
+Then your hard-coded user question can be assembled like:
+
+```text id="w817qv"
+If I go by train and car to Sydney next weekend,
+what should I expect in terms of weather,
+tell me one famous historical landmark there,
+and include any relevant company travel policies?
+```
+
+The main agent should call:
+
+```text id="jmn1f4"
+WeatherLookup
+KnowledgeLookup
+CompanyTravelPolicyTool
+```
+
+Then produce a combined answer.
+
+## My practical recommendation
+
+For your learning goal, implement RAG as a **BeeAI tool**.
+
+Do **not** overthink the storage or classification. Keep those as plain Python inside the tool. The important thing to observe is:
+
+```text id="lk5f1e"
+Can the BeeAI agent decide to call the policy retrieval tool?
+Can the RequirementAgent force or encourage the correct call?
+Does the returned policy text appear in the final answer?
+Can the trajectory middleware show the tool call?
+```
+
+That will teach you more about BeeAI than embedding, vector databases, or SQLite would.
+
+So the simplest accurate mental model is:
+
+> In BeeAI, make RAG retrieval a tool. The tool returns retrieved policy snippets. Those snippets then become context used by the agent to generate the final answer.
+
+[1]: https://framework.beeai.dev/modules/agents?utm_source=chatgpt.com "Agents"
+
+
+----------
+
+Thank you.  If you already have what you need, can you please implement the `CompanyTravelPolicyTool`?  Otherwise, what information do you need, or what decisions do we need to make, ahead of implementing the `CompanyTravelPolicyTool`?
+
+----------
+
+Yes, I have enough to implement it.
+
+For your learning goal, I would implement `CompanyTravelPolicyTool` as a **plain custom BeeAI tool** that:
+
+1. accepts a `travel_phrase`;
+2. extracts transport tags such as `train`, `car`, `plane`, `ferry`;
+3. loads a tiny JSON policy file;
+4. returns matching one-sentence policies as text.
+
+BeeAI’s current custom-tool pattern is to subclass `Tool`, define a Pydantic input schema, and return a `ToolOutput` such as `StringToolOutput`; the docs also emphasize keeping tool input schemas simple and tool output minimal. ([GitHub][1])
+
+## 1. `travel_policies.json`
+
+Put this file beside your Python script:
+
+```json
+{
+  "tag_aliases": {
+    "plane": ["plane", "flight", "fly", "flying", "air"],
+    "train": ["train", "rail", "railway"],
+    "car": ["car", "drive", "driving", "road"],
+    "ferry": ["ferry", "boat", "ship"]
+  },
+  "policies": [
+    {
+      "id": "flight-booking",
+      "tags": ["plane"],
+      "statement": "Flights must be booked through the company travel portal."
+    },
+    {
+      "id": "rail-preferred",
+      "tags": ["train"],
+      "statement": "Train travel is preferred for short journeys where practical."
+    },
+    {
+      "id": "car-approval",
+      "tags": ["car"],
+      "statement": "Car travel over 300 kilometres requires manager approval."
+    },
+    {
+      "id": "ferry-reimbursement",
+      "tags": ["ferry"],
+      "statement": "Ferry travel may be reimbursed when it is the most practical route."
+    },
+    {
+      "id": "reasonable-travel",
+      "tags": ["plane", "train", "car", "ferry"],
+      "statement": "Travellers must choose reasonable economy-class or equivalent travel options."
+    }
+  ]
+}
+```
+
+## 2. `company_travel_policy_tool.py`
+
+```python
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from beeai_framework.context import RunContext
+from beeai_framework.emitter import Emitter
+from beeai_framework.tools import StringToolOutput, Tool, ToolRunOptions
+
+
+class CompanyTravelPolicyToolInput(BaseModel):
+    travel_phrase: str = Field(
+        description=(
+            "A short natural-language travel phrase, such as "
+            "'take a plane to Rome', 'catch the ferry to Paris', "
+            "or 'go by train and car to Sydney'."
+        )
+    )
+
+
+class CompanyTravelPolicyTool(
+    Tool[CompanyTravelPolicyToolInput, ToolRunOptions, StringToolOutput]
+):
+    name = "CompanyTravelPolicyLookup"
+
+    description = (
+        "Retrieves company travel policy statements relevant to a travel phrase. "
+        "Use this when the user asks about travel and company travel policies may apply."
+    )
+
+    input_schema = CompanyTravelPolicyToolInput
+
+    def __init__(
+        self,
+        policy_file: str | Path = "travel_policies.json",
+        options: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(options)
+        self.policy_file = Path(policy_file)
+
+    def _create_emitter(self) -> Emitter:
+        return Emitter.root().child(
+            namespace=["tool", "company", "travel_policy"],
+            creator=self,
+        )
+
+    async def _run(
+        self,
+        input: CompanyTravelPolicyToolInput,
+        options: ToolRunOptions | None,
+        context: RunContext,
+    ) -> StringToolOutput:
+        data = self._load_policy_data()
+
+        tag_aliases: dict[str, list[str]] = data.get("tag_aliases", {})
+        policies: list[dict[str, Any]] = data.get("policies", [])
+
+        matched_tags = self._extract_tags(input.travel_phrase, tag_aliases)
+        matched_policies = self._find_matching_policies(matched_tags, policies)
+
+        result = self._format_result(
+            travel_phrase=input.travel_phrase,
+            matched_tags=matched_tags,
+            matched_policies=matched_policies,
+        )
+
+        return StringToolOutput(result=result)
+
+    def _load_policy_data(self) -> dict[str, Any]:
+        if not self.policy_file.exists():
+            return {
+                "tag_aliases": {},
+                "policies": [],
+            }
+
+        with self.policy_file.open("r", encoding="utf-8") as file:
+            return json.load(file)
+
+    def _extract_tags(
+        self,
+        travel_phrase: str,
+        tag_aliases: dict[str, list[str]],
+    ) -> list[str]:
+        words = set(re.findall(r"\b[a-zA-Z]+\b", travel_phrase.lower()))
+
+        matched_tags: list[str] = []
+
+        for tag, aliases in tag_aliases.items():
+            normalized_aliases = {alias.lower() for alias in aliases}
+
+            if words.intersection(normalized_aliases):
+                matched_tags.append(tag)
+
+        return matched_tags
+
+    def _find_matching_policies(
+        self,
+        matched_tags: list[str],
+        policies: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        matched_tag_set = set(matched_tags)
+
+        if not matched_tag_set:
+            return []
+
+        return [
+            policy
+            for policy in policies
+            if matched_tag_set.intersection(set(policy.get("tags", [])))
+        ]
+
+    def _format_result(
+        self,
+        travel_phrase: str,
+        matched_tags: list[str],
+        matched_policies: list[dict[str, Any]],
+    ) -> str:
+        if not matched_tags:
+            return (
+                f"No company travel policy tags were found for: {travel_phrase!r}. "
+                "No specific company travel policies apply."
+            )
+
+        if not matched_policies:
+            return (
+                f"Detected travel policy tags: {', '.join(matched_tags)}.\n"
+                "No matching company travel policy statements were found."
+            )
+
+        lines = [
+            f"Detected travel policy tags: {', '.join(matched_tags)}.",
+            "Relevant company travel policies:",
+        ]
+
+        for policy in matched_policies:
+            policy_id = policy.get("id", "unknown-policy")
+            statement = policy.get("statement", "")
+            lines.append(f"- {policy_id}: {statement}")
+
+        return "\n".join(lines)
+```
+
+## 3. Minimal standalone test
+
+Before wiring it into the agent, test the tool directly:
+
+```python
+import asyncio
+
+from company_travel_policy_tool import (
+    CompanyTravelPolicyTool,
+    CompanyTravelPolicyToolInput,
+)
+
+
+async def main() -> None:
+    tool = CompanyTravelPolicyTool()
+
+    result = await tool.run(
+        CompanyTravelPolicyToolInput(
+            travel_phrase="go by train and car to Sydney"
+        )
+    )
+
+    print(result.get_text_content())
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Expected output should be roughly:
+
+```text
+Detected travel policy tags: train, car.
+Relevant company travel policies:
+- rail-preferred: Train travel is preferred for short journeys where practical.
+- car-approval: Car travel over 300 kilometres requires manager approval.
+- reasonable-travel: Travellers must choose reasonable economy-class or equivalent travel options.
+```
+
+## 4. Add it to your `main_agent`
+
+In your main script:
+
+```python
+from company_travel_policy_tool import CompanyTravelPolicyTool
+```
+
+Then add it to the `main_agent` tools list:
+
+```python
+main_agent = RequirementAgent(
+    name="MainAgent",
+    llm=ChatModel.from_name("ollama:granite3.3:8b"),
+    tools=[
+        ThinkTool(),
+        CompanyTravelPolicyTool(),
+        HandoffTool(
+            knowledge_agent,
+            name="KnowledgeLookup",
+            description="Consult the Knowledge Agent for general questions.",
+        ),
+        HandoffTool(
+            weather_agent,
+            name="WeatherLookup",
+            description="Consult the Weather Agent for forecasts.",
+        ),
+    ],
+    requirements=[ConditionalRequirement(ThinkTool, force_at_step=1)],
+    middlewares=[GlobalTrajectoryMiddleware(included=[Tool])],
+)
+```
+
+And update the prompt so the agent knows it should use policy lookup:
+
+```python
+travel_phrase = "go by train and car to Sydney"
+
+question = (
+    f"If I {travel_phrase} next weekend, what should I expect in terms of weather, "
+    "tell me one famous historical landmark there, "
+    "and include any relevant company travel policies."
+)
+```
+
+## My recommendation
+
+Use this version first. Do **not** add SQLite, embeddings, or an LLM classifier yet.
+
+This implementation gives you the core BeeAI/RAG behavior you want to observe:
+
+```text
+agent receives travel request
+→ agent calls CompanyTravelPolicyLookup
+→ tool retrieves relevant policy statements
+→ tool output appears in trajectory middleware
+→ agent incorporates retrieved policy context into final answer
+```
+
+That is the useful experiment. Once this works, the next refinement would be forcing or strongly encouraging the policy tool call through a `RequirementAgent` requirement or clearer agent instructions.
+
+[1]: https://github.com/i-am-bee/beeai-framework/blob/main/python/examples/tools/custom/base.py "beeai-framework/python/examples/tools/custom/base.py at main · i-am-bee/beeai-framework · GitHub"
+
+
+----------
+
+Thank you.  Please consider the following:
+
+```
+travel_phrase = "go by train and car to Sydney"
+
+question = (
+    f"If I {travel_phrase} next weekend, what should I expect in terms of weather, "
+    "tell me one famous historical landmark there, "
+    "and include any relevant company travel policies."
+)
+```
+
+The agent does not get the `travel_phrase`.  This means there will be a disconnect between the agent (which gets the `question` prompt) and the `CompanyTravelPolicyLookup` tool (which expects the `travel_phrase`).  Do we need to change how the `CompanyTravelPolicyLookup` tool works, or do we need to change how the agent works, so that this disconnect is resolved?
+
+----------
+
+Yes, you spotted a real design issue.
+
+The cleanest fix is to make the tool accept the **full user question**, not only the isolated `travel_phrase`.
+
+For this experiment, I would change the tool rather than change the agent.
+
+## Better tool shape
+
+Instead of this:
+
+```python
+class CompanyTravelPolicyToolInput(BaseModel):
+    travel_phrase: str
+```
+
+use this:
+
+```python
+class CompanyTravelPolicyToolInput(BaseModel):
+    query: str = Field(
+        description=(
+            "The user's full travel-related question. "
+            "The tool will detect transport modes such as plane, train, car, and ferry."
+        )
+    )
+```
+
+Then the agent can call the tool with the full question:
+
+```text
+If I go by train and car to Sydney next weekend, what should I expect in terms of weather, tell me one famous historical landmark there, and include any relevant company travel policies.
+```
+
+The tool does not need the exact phrase `"go by train and car to Sydney"`. It only needs enough text to detect:
+
+```text
+train
+car
+```
+
+So the tag extraction can run over the whole question.
+
+## Why this is better
+
+In a real agent flow, tools usually receive information extracted or supplied by the agent from the conversation. But for a small local BeeAI experiment, you want to reduce fragility.
+
+This is fragile:
+
+```text
+Agent must infer the exact travel_phrase substring
+→ pass only that substring to the tool
+→ tool extracts tags
+```
+
+This is simpler:
+
+```text
+Agent passes the whole question
+→ tool extracts transport tags from all text
+→ tool returns policies
+```
+
+For your current examples, the full-question approach is perfectly adequate.
+
+## Revised input schema
+
+```python
+class CompanyTravelPolicyToolInput(BaseModel):
+    query: str = Field(
+        description=(
+            "The user's full travel-related question, such as "
+            "'If I go by train and car to Sydney next weekend, what should I expect?'"
+        )
+    )
+```
+
+Then change `_run` from:
+
+```python
+matched_tags = self._extract_tags(input.travel_phrase, tag_aliases)
+```
+
+to:
+
+```python
+matched_tags = self._extract_tags(input.query, tag_aliases)
+```
+
+And change formatting from:
+
+```python
+travel_phrase=input.travel_phrase
+```
+
+to:
+
+```python
+query=input.query
+```
+
+## Should you change the agent instead?
+
+You could change the agent prompt to include structured fields, for example:
+
+```python
+question = (
+    f"Travel phrase: {travel_phrase}\n"
+    f"Destination: {location}\n\n"
+    "Answer the user's travel question, including weather, one landmark, "
+    "and relevant company travel policies."
+)
+```
+
+That would make it easier for the agent to pass the right phrase to the tool.
+
+But I would not do that yet. It makes the user prompt artificial. Since you are trying to learn how BeeAI agents and tools interact, it is more useful to let the agent see a normal question and let the policy tool tolerate normal input.
+
+## Best simple design
+
+Use this arrangement:
+
+```text
+question
+  → given to MainAgent
+
+MainAgent
+  → passes full question to CompanyTravelPolicyLookup
+
+CompanyTravelPolicyLookup
+  → scans full question for travel tags
+  → retrieves matching policies
+  → returns policy statements
+
+MainAgent
+  → uses returned policy statements in final answer
+```
+
+## Slightly better prompt wording
+
+I would also make the question a little more explicit:
+
+```python
+travel_phrase = "go by train and car to Sydney"
+
+question = (
+    f"If I {travel_phrase} next weekend, what should I expect in terms of weather, "
+    "tell me one famous historical landmark there, "
+    "and check the company travel policies that apply to this trip."
+)
+```
+
+The phrase “check the company travel policies” is a stronger signal that the agent should call the policy tool.
+
+## My recommendation
+
+Change the tool input from `travel_phrase` to `query`.
+
+That resolves the disconnect while keeping the agent simple. Later, once the basic flow works, you can experiment with a more structured version where the agent extracts fields such as:
+
+```text
+destination
+transport_modes
+travel_dates
+```
+
+But for this learning agent, full-question-in, policy-statements-out is the right level of simplicity.
+
+
+----------
+
+Thank you.  Can you please implement the revised `CompanyTravelPolicyLookup` tool?
+
+----------
+
+Yes. Here is the revised version where the tool accepts the **full question** as `query`, not a separate `travel_phrase`.
+
+The implementation follows BeeAI’s custom-tool pattern: subclass `Tool`, use a Pydantic input schema, implement `_run`, and return `StringToolOutput`. IBM’s BeeAI example uses the same `Tool[...]`, `input_schema`, `_run`, and `StringToolOutput(result=...)` structure. ([GitHub][1])
+
+## `travel_policies.json`
+
+Keep this beside your main Python script:
+
+```json
+{
+  "tag_aliases": {
+    "plane": ["plane", "flight", "fly", "flying", "air"],
+    "train": ["train", "rail", "railway"],
+    "car": ["car", "drive", "driving", "road"],
+    "ferry": ["ferry", "boat", "ship"]
+  },
+  "policies": [
+    {
+      "id": "flight-booking",
+      "tags": ["plane"],
+      "statement": "Flights must be booked through the company travel portal."
+    },
+    {
+      "id": "rail-preferred",
+      "tags": ["train"],
+      "statement": "Train travel is preferred for short journeys where practical."
+    },
+    {
+      "id": "car-approval",
+      "tags": ["car"],
+      "statement": "Car travel over 300 kilometres requires manager approval."
+    },
+    {
+      "id": "ferry-reimbursement",
+      "tags": ["ferry"],
+      "statement": "Ferry travel may be reimbursed when it is the most practical route."
+    },
+    {
+      "id": "reasonable-travel",
+      "tags": ["plane", "train", "car", "ferry"],
+      "statement": "Travellers must choose reasonable economy-class or equivalent travel options."
+    }
+  ]
+}
+```
+
+## `company_travel_policy_tool.py`
+
+```python
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from beeai_framework.context import RunContext
+from beeai_framework.emitter import Emitter
+from beeai_framework.tools import StringToolOutput, Tool, ToolRunOptions
+
+
+class CompanyTravelPolicyLookupInput(BaseModel):
+    query: str = Field(
+        description=(
+            "The user's full travel-related question. "
+            "The tool scans this text for transport modes such as plane, train, car, and ferry, "
+            "then returns matching company travel policies."
+        )
+    )
+
+
+class CompanyTravelPolicyLookup(
+    Tool[CompanyTravelPolicyLookupInput, ToolRunOptions, StringToolOutput]
+):
+    name = "CompanyTravelPolicyLookup"
+
+    description = (
+        "Retrieves company travel policy statements relevant to the user's travel question. "
+        "Use this when the user asks about travel and asks for company travel policies."
+    )
+
+    input_schema = CompanyTravelPolicyLookupInput
+
+    def __init__(
+        self,
+        policy_file: str | Path = "travel_policies.json",
+        options: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(options)
+        self.policy_file = Path(policy_file)
+
+    def _create_emitter(self) -> Emitter:
+        return Emitter.root().child(
+            namespace=["tool", "company", "travel_policy_lookup"],
+            creator=self,
+        )
+
+    async def _run(
+        self,
+        input: CompanyTravelPolicyLookupInput,
+        options: ToolRunOptions | None,
+        context: RunContext,
+    ) -> StringToolOutput:
+        policy_data = self._load_policy_data()
+
+        tag_aliases: dict[str, list[str]] = policy_data.get("tag_aliases", {})
+        policies: list[dict[str, Any]] = policy_data.get("policies", [])
+
+        matched_tags = self._extract_tags(
+            query=input.query,
+            tag_aliases=tag_aliases,
+        )
+
+        matched_policies = self._find_matching_policies(
+            matched_tags=matched_tags,
+            policies=policies,
+        )
+
+        result = self._format_result(
+            query=input.query,
+            matched_tags=matched_tags,
+            matched_policies=matched_policies,
+        )
+
+        return StringToolOutput(result=result)
+
+    def _load_policy_data(self) -> dict[str, Any]:
+        if not self.policy_file.exists():
+            return {
+                "tag_aliases": {},
+                "policies": [],
+            }
+
+        with self.policy_file.open("r", encoding="utf-8") as file:
+            return json.load(file)
+
+    def _extract_tags(
+        self,
+        query: str,
+        tag_aliases: dict[str, list[str]],
+    ) -> list[str]:
+        query_words = set(re.findall(r"\b[a-zA-Z]+\b", query.lower()))
+        matched_tags: list[str] = []
+
+        for tag, aliases in tag_aliases.items():
+            alias_words = {alias.lower() for alias in aliases}
+
+            if query_words.intersection(alias_words):
+                matched_tags.append(tag)
+
+        return matched_tags
+
+    def _find_matching_policies(
+        self,
+        matched_tags: list[str],
+        policies: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        matched_tag_set = set(matched_tags)
+
+        if not matched_tag_set:
+            return []
+
+        return [
+            policy
+            for policy in policies
+            if matched_tag_set.intersection(set(policy.get("tags", [])))
+        ]
+
+    def _format_result(
+        self,
+        query: str,
+        matched_tags: list[str],
+        matched_policies: list[dict[str, Any]],
+    ) -> str:
+        if not matched_tags:
+            return (
+                "No transport-mode tags were detected in the user question.\n"
+                f"Question: {query}\n"
+                "No specific company travel policies apply."
+            )
+
+        if not matched_policies:
+            return (
+                f"Detected transport-mode tags: {', '.join(matched_tags)}.\n"
+                "No matching company travel policy statements were found."
+            )
+
+        lines = [
+            f"Detected transport-mode tags: {', '.join(matched_tags)}.",
+            "Relevant company travel policies:",
+        ]
+
+        for policy in matched_policies:
+            policy_id = policy.get("id", "unknown-policy")
+            statement = policy.get("statement", "")
+
+            if statement:
+                lines.append(f"- {policy_id}: {statement}")
+
+        return "\n".join(lines)
+```
+
+## Direct test file
+
+You can test the tool without the agent first:
+
+```python
+import asyncio
+
+from company_travel_policy_tool import (
+    CompanyTravelPolicyLookup,
+    CompanyTravelPolicyLookupInput,
+)
+
+
+async def main() -> None:
+    tool = CompanyTravelPolicyLookup()
+
+    question = (
+        "If I go by train and car to Sydney next weekend, "
+        "what should I expect in terms of weather, "
+        "tell me one famous historical landmark there, "
+        "and include any relevant company travel policies."
+    )
+
+    result = await tool.run(
+        CompanyTravelPolicyLookupInput(query=question)
+    )
+
+    print(result.get_text_content())
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Expected output:
+
+```text
+Detected transport-mode tags: train, car.
+Relevant company travel policies:
+- rail-preferred: Train travel is preferred for short journeys where practical.
+- car-approval: Car travel over 300 kilometres requires manager approval.
+- reasonable-travel: Travellers must choose reasonable economy-class or equivalent travel options.
+```
+
+## Add it to your `main_agent`
+
+```python
+from company_travel_policy_tool import CompanyTravelPolicyLookup
+```
+
+Then:
+
+```python
+main_agent = RequirementAgent(
+    name="MainAgent",
+    llm=ChatModel.from_name("ollama:granite3.3:8b"),
+    tools=[
+        ThinkTool(),
+        CompanyTravelPolicyLookup(),
+        HandoffTool(
+            knowledge_agent,
+            name="KnowledgeLookup",
+            description="Consult the Knowledge Agent for general questions.",
+        ),
+        HandoffTool(
+            weather_agent,
+            name="WeatherLookup",
+            description="Consult the Weather Agent for forecasts.",
+        ),
+    ],
+    requirements=[ConditionalRequirement(ThinkTool, force_at_step=1)],
+    middlewares=[GlobalTrajectoryMiddleware(included=[Tool])],
+)
+```
+
+And I would slightly strengthen the user question so the agent has an obvious reason to call the tool:
+
+```python
+travel_phrase = "go by train and car to Sydney"
+
+question = (
+    f"If I {travel_phrase} next weekend, what should I expect in terms of weather, "
+    "tell me one famous historical landmark there, "
+    "and check the company travel policies that apply to this trip."
+)
+```
+
+The important change is that `CompanyTravelPolicyLookup` now receives the same thing the agent sees: the full user question. That removes the disconnect.
+
+[1]: https://github.com/i-am-bee/beeai-framework/blob/main/python/examples/tools/custom/base.py?utm_source=chatgpt.com "beeai-framework/python/examples/tools/custom/base.py ..."

@@ -1,0 +1,35 @@
+{
+  "tag_aliases": {
+    "plane": ["plane", "flight", "fly", "air"],
+    "train": ["train", "rail"],
+    "car": ["car", "drive", "driving"],
+    "ferry": ["ferry", "boat", "ship"]
+  },
+  "policies": [
+    {
+      "id": "flight-booking",
+      "tags": ["plane"],
+      "statement": "Flights must be booked through the company travel portal."
+    },
+    {
+      "id": "rail-preferred",
+      "tags": ["train"],
+      "statement": "Train travel is preferred for short journeys where practical."
+    },
+    {
+      "id": "car-approval",
+      "tags": ["car"],
+      "statement": "Car travel over 300 kilometres requires manager approval."
+    },
+    {
+      "id": "ferry-reimbursement",
+      "tags": ["ferry"],
+      "statement": "Ferry travel may be reimbursed when it is the most practical route."
+    },
+    {
+      "id": "economy-travel",
+      "tags": ["plane", "train", "car", "ferry"],
+      "statement": "Travellers must choose reasonable economy-class or equivalent options."
+    }
+  ]
+}
