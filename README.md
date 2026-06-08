@@ -2,6 +2,9 @@
 
 A small Python agent built with IBM's BeeAI framework. It accepts a lightweight travel phrase, extracts the destination, checks next-weekend weather, looks up a landmark, retrieves matching company travel policies, and prints a short travel briefing.
 
+> [!WARNING]
+> This is an experimental project and should not be considered production-ready.
+
 This is an experimental learning project rather than a production travel planner. Some shortcuts have been taken so the project can stay focused on learning the BeeAI framework.
 
 ## What it does
@@ -114,3 +117,11 @@ scripts/
 The phrase parser is intentionally simple. It does not perform real named entity recognition or model-based classification.
 
 The policy lookup is also intentionally small. It demonstrates the retrieval shape of RAG using structured JSON data rather than embeddings or a vector database. This keeps the retrieval step visible while avoiding infrastructure that would distract from the BeeAI tool flow.
+
+## Third-Party Notices
+
+This project has a direct runtime dependency on the `beeai-framework` Python package (Apache-2.0). See the package's PyPI license metadata for full license and notice terms.
+
+## License
+
+GNU General Public License v3.0. See the `LICENSE` file for details.
